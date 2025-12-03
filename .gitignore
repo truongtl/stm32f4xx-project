@@ -53,3 +53,9 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+#json
+*.json
+
+#build
+build/
