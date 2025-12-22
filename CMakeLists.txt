@@ -16,8 +16,14 @@ if(NOT CMAKE_TOOLCHAIN_FILE)
 endif()
 
 # ----- Sources -----
-file(GLOB SRC_LIB "${CMAKE_SOURCE_DIR}/libs/*.c")
-set(SRC_DEV      ${CMAKE_SOURCE_DIR}/drivers/CMSIS/Device/system_stm32f4xx.c)
+file(GLOB SRC_LIB_CLI "${CMAKE_SOURCE_DIR}/libs/cli/*.c")
+if(PROJECT STREQUAL "freertos")
+  file(GLOB SRC_LIB_FREERTOS "${CMAKE_SOURCE_DIR}/libs/freertos/*.c")
+  file(GLOB SRC_LIB_FREERTOS_PORT "${CMAKE_SOURCE_DIR}/libs/freertos/portable/GCC/ARM_CM4F/*.c")
+else()
+  set(SRC_LIB_FREERTOS "")
+  set(SRC_LIB_FREERTOS_PORT "")
+endif()
 file(GLOB SRC_HAL   ${CMAKE_SOURCE_DIR}/drivers/STM32F4xx_HAL_Driver/Src/*.c)
 file(GLOB SRC_LEG   ${CMAKE_SOURCE_DIR}/drivers/STM32F4xx_HAL_Driver/Src/Legacy/*.c)
 
@@ -33,8 +39,9 @@ set(SRC_STARTUP ${CMAKE_SOURCE_DIR}/drivers/CMSIS/Device/startup/startup_stm32f4
 
 set(TARGET_NAME ${PROJECT})
 add_executable(${TARGET_NAME}
-  ${SRC_LIB}
-  ${SRC_DEV}
+  ${SRC_LIB_CLI}
+  ${SRC_LIB_FREERTOS}
+  ${SRC_LIB_FREERTOS_PORT}
   ${SRC_HAL}
   ${SRC_LEG}
   ${SRC_PROJECT}
@@ -61,7 +68,9 @@ endif()
 message(STATUS "Using linker script: ${LINKER_SCRIPT}")
 
 target_include_directories(${TARGET_NAME} PRIVATE
-  ${CMAKE_SOURCE_DIR}/libs
+  ${CMAKE_SOURCE_DIR}/libs/cli
+  $<$<STREQUAL:${PROJECT},freertos>:${CMAKE_SOURCE_DIR}/libs/freertos/include>
+  $<$<STREQUAL:${PROJECT},freertos>:${CMAKE_SOURCE_DIR}/libs/freertos/portable/GCC/ARM_CM4F>
   ${CMAKE_SOURCE_DIR}/drivers/CMSIS/Core
   ${CMAKE_SOURCE_DIR}/drivers/CMSIS/Device
   ${CMAKE_SOURCE_DIR}/drivers/STM32F4xx_HAL_Driver/Inc
