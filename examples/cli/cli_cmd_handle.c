@@ -1,49 +1,49 @@
 #include "stm32f4xx_hal.h"
 #include "cli_cmds.h"
 
-static volatile rtc_time_t rtc_time = {0};
-static volatile uint16_t rtc_ms = 0;
+static volatile sys_time_t sys_time = {0};
+static volatile uint16_t sys_ms = 0;
 static const uint8_t days_in_month[] = {31,28,31,30,31,30,31,31,30,31,30,31};
 
 static uint8_t is_leap_year(uint16_t year);
-static void rtc_tick_update(void);
+static void sys_tick_update(void);
 
 static uint8_t is_leap_year(uint16_t year)
 {
     return ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0));
 }
 
-static void rtc_tick_update(void)
+static void sys_tick_update(void)
 {
-    rtc_ms++;
-    if (rtc_ms >= 1000)
+    sys_ms++;
+    if (sys_ms >= 1000)
     {
-        rtc_ms = 0;
-        rtc_time.sec++;
-        if (rtc_time.sec >= 60)
+        sys_ms = 0;
+        sys_time.sec++;
+        if (sys_time.sec >= 60)
         {
-            rtc_time.sec = 0;
-            rtc_time.min++;
-            if (rtc_time.min >= 60)
+            sys_time.sec = 0;
+            sys_time.min++;
+            if (sys_time.min >= 60)
             {
-                rtc_time.min = 0;
-                rtc_time.hour++;
-                if (rtc_time.hour >= 24)
+                sys_time.min = 0;
+                sys_time.hour++;
+                if (sys_time.hour >= 24)
                 {
-                    rtc_time.hour = 0;
-                    rtc_time.day++;
+                    sys_time.hour = 0;
+                    sys_time.day++;
 
-                    uint8_t dim = days_in_month[rtc_time.month - 1];
-                    if ((rtc_time.month == 2) && is_leap_year(rtc_time.year)) dim = 29;
+                    uint8_t dim = days_in_month[sys_time.month - 1];
+                    if ((sys_time.month == 2) && is_leap_year(sys_time.year)) dim = 29;
 
-                    if (rtc_time.day > dim)
+                    if (sys_time.day > dim)
                     {
-                        rtc_time.day = 1;
-                        rtc_time.month++;
-                        if (rtc_time.month > 12)
+                        sys_time.day = 1;
+                        sys_time.month++;
+                        if (sys_time.month > 12)
                         {
-                            rtc_time.month = 1;
-                            rtc_time.year++;
+                            sys_time.month = 1;
+                            sys_time.year++;
                         }
                     }
                 }
@@ -54,7 +54,7 @@ static void rtc_tick_update(void)
 
 void HAL_SysTick_UserCallback(void)
 {
-    rtc_tick_update();
+    sys_tick_update();
 }
 
 void board_led_write(int led_state)
@@ -62,19 +62,19 @@ void board_led_write(int led_state)
     HAL_GPIO_WritePin(LED_PORT, LED_PIN, (GPIO_PinState)led_state);
 }
 
-rtc_time_t board_gettime(void)
+sys_time_t board_gettime(void)
 {
-    return rtc_time;
+    return sys_time;
 }
 
-void board_settime(rtc_time_t t)
+void board_settime(sys_time_t t)
 {
-    rtc_time.year = t.year;
-    rtc_time.month = t.month;
-    rtc_time.day = t.day;
-    rtc_time.hour = t.hour;
-    rtc_time.min = t.min;
-    rtc_time.sec = t.sec;
+    sys_time.year = t.year;
+    sys_time.month = t.month;
+    sys_time.day = t.day;
+    sys_time.hour = t.hour;
+    sys_time.min = t.min;
+    sys_time.sec = t.sec;
 }
 
 void board_reboot(void)

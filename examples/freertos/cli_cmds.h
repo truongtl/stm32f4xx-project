@@ -10,6 +10,6 @@ typedef struct {
     uint8_t day;
     uint8_t month;
     uint16_t year;
-} rtc_time_t;
+} sys_time_t;
 
 void cli_register_default_table(void);

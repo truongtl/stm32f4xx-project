@@ -5,8 +5,8 @@
 #include "uart.h"
 
 __attribute__((weak)) void board_led_write(int led_state) { (void)led_state; }
-__attribute__((weak)) rtc_time_t board_gettime(void) { return (rtc_time_t){0}; }
-__attribute__((weak)) void board_settime(rtc_time_t t) { (void)t; }
+__attribute__((weak)) sys_time_t board_gettime(void) { return (sys_time_t){0}; }
+__attribute__((weak)) void board_settime(sys_time_t t) { (void)t; }
 __attribute__((weak)) void board_reboot(void) {}
 
 static void cmd_help(int argc, char **argv);
@@ -82,7 +82,7 @@ static void cmd_gettime(int argc, char **argv) {
     (void)argc;
     (void)argv;
 
-    rtc_time_t t = board_gettime();
+    sys_time_t t = board_gettime();
 
     char buf[32];
     sprintf(buf, "%04u-%02u-%02u %02u:%02u:%02u",
@@ -101,7 +101,7 @@ static void cmd_settime(int argc, char **argv) {
     }
 
     int y, m, d, H, M, S;
-    rtc_time_t t;
+    sys_time_t t;
 
     if (sscanf(argv[1], "%d-%d-%d", &y, &m, &d) != 3 ||
         sscanf(argv[2], "%d:%d:%d", &H, &M, &S) != 3)
