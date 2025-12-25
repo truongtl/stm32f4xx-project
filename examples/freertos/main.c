@@ -3,6 +3,11 @@
 #include "cli_uart_port.h"
 #include "cli_cmds.h"
 #include "cli.h"
+#include "FreeRTOS.h"
+#include "task.h"
+#include "timers.h"
+#include "semphr.h"
+#include "queue.h"
 
 UART_HandleTypeDef huart1;
 
@@ -77,6 +82,32 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* huart)
     }
 }
 
+void vLedTask(void *pvParameters)
+{
+    for (;;)
+    {
+        HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+}
+
+void vCliTask(void *pvParameters)
+{
+    for (;;)
+    {
+        uint8_t ch = 0;
+
+        if (uart_getc(&ch))
+        {
+            cli_process_byte(ch);
+        }
+        else
+        {
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+    }
+}
+
 /**
   * @brief  The application entry point.
   * @retval int
@@ -99,15 +130,14 @@ int main(void)
     cli_bind_uart();
     cli_register_default_table();
 
+    xTaskCreate(vLedTask, "LED_Task", 128, NULL, 1, NULL);
+    xTaskCreate(vCliTask, "CLI_Task", 128, NULL, 2, NULL);
+
+    vTaskStartScheduler();
+
     /* Infinite loop */
     while (1)
     {
-        uint8_t ch = 0;
-
-        if (uart_getc(&ch))
-        {
-            cli_process_byte(ch);
-        }
     }
 }
 
