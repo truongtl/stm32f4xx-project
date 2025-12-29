@@ -1,26 +1,21 @@
 #include "stm32f4xx_hal.h"
 
 #define BOOTLOADER_ADDR 0x1FFF0000 // Bootloader start address
-#define BOOTLOADER_VECTOR_TABLE	((struct bootloader_vectable__t *)BOOTLOADER_ADDR)
+#define BOOTLOADER_VECTOR_TABLE	((struct bootloader_vectable_t *)BOOTLOADER_ADDR)
 
-extern uint32_t _estack;
+UART_HandleTypeDef huart1;
+uint8_t rx_byte;
 
 static void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_USART1_UART_Init(void);
 static void Error_Handler(void);
 static void JumpToBootloader(void);
-static void Force_Reset_Handler(void);
 
-struct bootloader_vectable__t {
+struct bootloader_vectable_t
+{
     uint32_t stack_pointer;
     void (*reset_handler)(void);
-};
-
-__attribute__((section(".force_reset_vtable")))
-const void* force_reset_vtable[] =
-{
-    (void*)&_estack,          // MSP
-    Force_Reset_Handler       // Reset_Handler
 };
 
 /**
@@ -30,6 +25,63 @@ void HAL_MspInit(void)
 {
     __HAL_RCC_SYSCFG_CLK_ENABLE();
     __HAL_RCC_PWR_CLK_ENABLE();
+}
+
+/**
+  * @brief UART MSP Initialization
+  * This function configures the hardware resources used in this example
+  * @param huart: UART handle pointer
+  * @retval None
+  */
+void HAL_UART_MspInit(UART_HandleTypeDef* huart)
+{
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+    if (huart->Instance == USART1)
+    {
+        /* Peripheral clock enable */
+        __HAL_RCC_USART1_CLK_ENABLE();
+
+        __HAL_RCC_GPIOA_CLK_ENABLE();
+        /**USART1 GPIO Configuration
+         PA9     ------> USART1_TX
+        PA10     ------> USART1_RX
+        */
+        GPIO_InitStruct.Pin = GPIO_PIN_9|GPIO_PIN_10;
+        GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+        GPIO_InitStruct.Pull = GPIO_NOPULL;
+        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+        GPIO_InitStruct.Alternate = GPIO_AF7_USART1;
+        HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+        /* USART1 interrupt Init */
+        HAL_NVIC_SetPriority(USART1_IRQn, 0, 0);
+        HAL_NVIC_EnableIRQ(USART1_IRQn);
+    }
+}
+
+/**
+  * @brief UART MSP De-Initialization
+  * This function freeze the hardware resources used in this example
+  * @param huart: UART handle pointer
+  * @retval None
+  */
+void HAL_UART_MspDeInit(UART_HandleTypeDef* huart)
+{
+    if (huart->Instance == USART1)
+    {
+        /* Peripheral clock disable */
+        __HAL_RCC_USART1_CLK_DISABLE();
+
+        /**USART1 GPIO Configuration
+        PA9     ------> USART1_TX
+        PA10     ------> USART1_RX
+        */
+        HAL_GPIO_DeInit(GPIOA, GPIO_PIN_9|GPIO_PIN_10);
+
+        /* USART1 interrupt DeInit */
+        HAL_NVIC_DisableIRQ(USART1_IRQn);
+    }
 }
 
 void JumpToBootloader(void)
@@ -47,24 +99,22 @@ void JumpToBootloader(void)
     SysTick->VAL = 0;
 
     // Disable interrupts and clear pending ones
-    for (size_t i = 0; i < sizeof(NVIC->ICER)/sizeof(NVIC->ICER[0]); i++) {
+    for (size_t i = 0; i < sizeof(NVIC->ICER)/sizeof(NVIC->ICER[0]); i++)
+    {
         NVIC->ICER[i]=0xFFFFFFFF;
         NVIC->ICPR[i]=0xFFFFFFFF;
     }
 
-    // Map Bootloader (system flash) memory to 0x00000000. This is STM32 family dependant.
+    // Re-enable interrupts
+    __enable_irq();
+
+    // Map Bootloader (system flash) memory to 0x00000000
     __HAL_SYSCFG_REMAPMEMORY_SYSTEMFLASH();
-
-    // Set embedded bootloader vector table base offset
-    WRITE_REG(SCB->VTOR, SCB_VTOR_TBLOFF_Msk & 0x00000000);
-
-    // Switch to Main Stack Pointer (in case it was using the Process Stack Pointer)
-    __set_CONTROL(0);
 
     // Instruction synchronization barrier
     __ISB();
 
-    // Set Main Stack Pointer to the Bootloader defined value.
+    // Set Main Stack Pointer to the Bootloader defined value
     __set_MSP(BOOTLOADER_VECTOR_TABLE->stack_pointer);
 
     __DSB(); // Data synchronization barrier
@@ -74,19 +124,7 @@ void JumpToBootloader(void)
     BOOTLOADER_VECTOR_TABLE->reset_handler();
 
     // The next instructions will not be reached
-    while (1){}
-}
-
-__attribute__((noreturn))
-void Force_Reset_Handler(void)
-{
-    __disable_irq();
-    __DSB();
-    __ISB();
-
-    NVIC_SystemReset();
-
-    while (1);
+    while (1) {}
 }
 
 /**
@@ -105,10 +143,32 @@ int main(void)
 
     /* Initialize all configured peripherals */
     MX_GPIO_Init();
-    JumpToBootloader();
+    MX_USART1_UART_Init();
+
+    uint8_t str[] = "Jump to Bootloader when receiving 0x11!";
+    HAL_UART_Transmit(&huart1, str, sizeof(str), 50);
+    HAL_UART_Receive_IT(&huart1, &rx_byte, 1);
+
     /* Infinite loop */
     while (1)
     {
+        HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+        HAL_Delay(500);
+    }
+}
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART1)
+    {
+        HAL_UART_Transmit(&huart1, &rx_byte, 1, 50);
+        HAL_UART_Receive_IT(&huart1, &rx_byte, 1);
+        if (rx_byte == 0x11)
+        {
+            uint8_t str3[] = "Jump to Bootloader ...GO!!!";
+            HAL_UART_Transmit(&huart1, str3, sizeof(str3), 50);
+            JumpToBootloader();
+        }
     }
 }
 
@@ -149,6 +209,28 @@ void SystemClock_Config(void)
     RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
     if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+    {
+        Error_Handler();
+    }
+}
+
+/**
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART1_UART_Init(void)
+{
+    huart1.Instance = USART1;
+    huart1.Init.BaudRate = 115200;
+    huart1.Init.WordLength = UART_WORDLENGTH_8B;
+    huart1.Init.StopBits = UART_STOPBITS_1;
+    huart1.Init.Parity = UART_PARITY_NONE;
+    huart1.Init.Mode = UART_MODE_TX_RX;
+    huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+    huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+
+    if (HAL_UART_Init(&huart1) != HAL_OK)
     {
         Error_Handler();
     }
