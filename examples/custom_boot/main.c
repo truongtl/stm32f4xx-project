@@ -1,0 +1,271 @@
+#include "stm32f4xx_hal.h"
+#include <stdio.h>
+#include <string.h>
+#include "mem_layout.h"
+
+#define APP_VECTOR_TABLE	((struct app_vectable_t *)APP_START_ADDR)
+
+UART_HandleTypeDef huart1;
+
+static void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_USART1_UART_Init(void);
+static void Error_Handler(void);
+static void JumpToApplication(void);
+
+struct app_vectable_t
+{
+    uint32_t stack_pointer;
+    void (*reset_handler)(void);
+};
+
+/**
+  * Initializes the Global MSP.
+  */
+void HAL_MspInit(void)
+{
+    __HAL_RCC_SYSCFG_CLK_ENABLE();
+    __HAL_RCC_PWR_CLK_ENABLE();
+}
+
+/**
+  * @brief UART MSP Initialization
+  * This function configures the hardware resources used in this example
+  * @param huart: UART handle pointer
+  * @retval None
+  */
+void HAL_UART_MspInit(UART_HandleTypeDef* huart)
+{
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+    if (huart->Instance == USART1)
+    {
+        /* Peripheral clock enable */
+        __HAL_RCC_USART1_CLK_ENABLE();
+
+        __HAL_RCC_GPIOA_CLK_ENABLE();
+        /**USART1 GPIO Configuration
+         PA9     ------> USART1_TX
+        PA10     ------> USART1_RX
+        */
+        GPIO_InitStruct.Pin = GPIO_PIN_9|GPIO_PIN_10;
+        GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+        GPIO_InitStruct.Pull = GPIO_NOPULL;
+        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+        GPIO_InitStruct.Alternate = GPIO_AF7_USART1;
+        HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+    }
+}
+
+/**
+  * @brief UART MSP De-Initialization
+  * This function freeze the hardware resources used in this example
+  * @param huart: UART handle pointer
+  * @retval None
+  */
+void HAL_UART_MspDeInit(UART_HandleTypeDef* huart)
+{
+    if (huart->Instance == USART1)
+    {
+        /* Peripheral clock disable */
+        __HAL_RCC_USART1_CLK_DISABLE();
+
+        /**USART1 GPIO Configuration
+        PA9     ------> USART1_TX
+        PA10     ------> USART1_RX
+        */
+        HAL_GPIO_DeInit(GPIOA, GPIO_PIN_9|GPIO_PIN_10);
+    }
+}
+
+void JumpToApplication(void)
+{
+    // Disable all interrupts
+    __disable_irq();
+
+    // Stop Systick
+    SysTick->CTRL = 0;
+    SysTick->LOAD = 0;
+    SysTick->VAL = 0;
+
+    // Disable interrupts and clear pending ones
+    for (size_t i = 0; i < sizeof(NVIC->ICER)/sizeof(NVIC->ICER[0]); i++) {
+        NVIC->ICER[i]=0xFFFFFFFF;
+        NVIC->ICPR[i]=0xFFFFFFFF;
+    }
+
+    // Map Bootloader (system flash) memory to 0x00000000.
+    __HAL_SYSCFG_REMAPMEMORY_SYSTEMFLASH();
+
+    // Instruction synchronization barrier
+    __ISB();
+
+    // Set Main Stack Pointer to the Bootloader defined value.
+    __set_MSP(APP_VECTOR_TABLE->stack_pointer);
+
+    __DSB(); // Data synchronization barrier
+    __ISB(); // Instruction synchronization barrier
+
+    // Jump to application's Reset Handler
+    APP_VECTOR_TABLE->reset_handler();
+
+    // The next instructions will not be reached
+    while (1) {}
+}
+
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
+    /* MCU Configuration--------------------------------------------------------*/
+
+    /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+    HAL_Init();
+
+    /* Configure the system clock */
+    SystemClock_Config();
+
+    /* Initialize all configured peripherals */
+    MX_GPIO_Init();
+    MX_USART1_UART_Init();
+
+    uint8_t str[] = "STM32F411 CUSTOM BOOTLOADER!\r\n";
+    uint8_t str1[] = "GO!!!\r\n";
+    uint8_t tx_buff[64] = {0,};
+
+    HAL_UART_Transmit(&huart1, str, sizeof(str), 50);
+
+    for (uint8_t i = 3; i >= 0; i--)
+    {
+        if (i == 0)
+        {
+            HAL_UART_Transmit(&huart1, str1, sizeof(str1), 50);
+            break;
+        }
+
+        sprintf(tx_buff, "Jump to App in %ds\r\n", i);
+        HAL_UART_Transmit(&huart1, tx_buff, sizeof(tx_buff), 50);
+        HAL_Delay(1000);
+    }
+
+    JumpToApplication();
+
+    /* Infinite loop */
+    while (1) {}
+}
+
+/**
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
+    RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+    RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+    /** Configure the main internal regulator output voltage
+     */
+    __HAL_RCC_PWR_CLK_ENABLE();
+    __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+
+    /** Initializes the RCC Oscillators according to the specified parameters
+     * in the RCC_OscInitTypeDef structure.
+     */
+    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+    RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+    RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+    RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+
+    if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    /** Initializes the CPU, AHB and APB buses clocks
+     */
+    RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                                |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+    RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+    RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+    RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+
+    if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+    {
+        Error_Handler();
+    }
+}
+
+/**
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART1_UART_Init(void)
+{
+    huart1.Instance = USART1;
+    huart1.Init.BaudRate = 115200;
+    huart1.Init.WordLength = UART_WORDLENGTH_8B;
+    huart1.Init.StopBits = UART_STOPBITS_1;
+    huart1.Init.Parity = UART_PARITY_NONE;
+    huart1.Init.Mode = UART_MODE_TX_RX;
+    huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+    huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+
+    if (HAL_UART_Init(&huart1) != HAL_OK)
+    {
+        Error_Handler();
+    }
+}
+
+/**
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_GPIO_Init(void)
+{
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+    /* GPIO Ports Clock Enable */
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    __HAL_RCC_GPIOH_CLK_ENABLE();
+
+    /*Configure GPIO pin Output Level */
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
+
+    /*Configure GPIO pin : PC13 */
+    GPIO_InitStruct.Pin = GPIO_PIN_13;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+}
+
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
+    __disable_irq();
+
+    while (1)
+    {
+    }
+}
+
+#ifdef USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
+}
+#endif /* USE_FULL_ASSERT */

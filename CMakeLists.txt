@@ -28,7 +28,7 @@ foreach(LIB_DIR ${LIB_DIRS})
         if(LIB_NAME STREQUAL "freertos")
             string(TOLOWER "${PROJECT}" PROJECT_LOWER)
             if(PROJECT_LOWER MATCHES "freertos")
-                message(STATUS "  [+] freertos (with special handling)")
+                message(STATUS "  [+] freertos")
 
                 # FreeRTOS core
                 file(GLOB FREERTOS_CORE "${LIB_DIR}/*.c")
@@ -53,19 +53,14 @@ foreach(LIB_DIR ${LIB_DIRS})
                     ${LIB_DIR}/include
                     ${LIB_DIR}/portable/GCC/ARM_CM4F
                 )
-            else()
-                message(STATUS "  [-] freertos (skipped, project name doesn't contain 'freertos')")
             endif()
         else()
+            list(APPEND INC_ALL_LIBS ${LIB_DIR})
             file(GLOB_RECURSE LIB_SOURCES CONFIGURE_DEPENDS "${LIB_DIR}/*.c")
             if(LIB_SOURCES)
                 list(APPEND SRC_ALL_LIBS ${LIB_SOURCES})
-                list(APPEND INC_ALL_LIBS ${LIB_DIR})
-
                 list(LENGTH LIB_SOURCES NUM_FILES)
-                message(STATUS "  [+] ${LIB_NAME} (${NUM_FILES} files)")
-            else()
-                message(STATUS "  [~] ${LIB_NAME} (no .c files)")
+                message(STATUS "  [+] ${LIB_NAME}")
             endif()
         endif()
     endif()
@@ -83,7 +78,7 @@ endif()
 file(GLOB SRC_PROJECT CONFIGURE_DEPENDS "${PRJ_DIR}/*.c")
 
 # ----- Startup -----
-set(SRC_STARTUP ${CMAKE_SOURCE_DIR}/drivers/CMSIS/Device/startup/startup_stm32f411xe.s)
+set(SRC_STARTUP ${CMAKE_SOURCE_DIR}/drivers/CMSIS/Device/startup_stm32f411xe.s)
 
 # ----- Create executable -----
 set(TARGET_NAME ${PROJECT})
@@ -96,24 +91,28 @@ add_executable(${TARGET_NAME}
 )
 
 # ----- Linker script selection -----
-option(USE_BOOT_APP_LD "Use split boot/app linker scripts" OFF)
+# Priority:
+# 1. Project-specific linker script in examples/<project>/*.ld
+# 2. Default linker script in drivers/CMSIS/Device/
+set(LD_DEFAULT ${CMAKE_SOURCE_DIR}/drivers/CMSIS/Device/STM32F411CEUX_FLASH.ld)
 
-set(LD_DEFAULT ${CMAKE_SOURCE_DIR}/drivers/CMSIS/Device/linker/STM32F411CEUX_FLASH.ld)
-set(LD_BOOT    ${CMAKE_SOURCE_DIR}/drivers/CMSIS/Device/linker/fake_vtor_boot.ld)
-set(LD_APP     ${CMAKE_SOURCE_DIR}/drivers/CMSIS/Device/linker/app.ld)
+# Search for .ld file in project directory
+file(GLOB PROJECT_LINKER_SCRIPTS "${PRJ_DIR}/*.ld")
 
-set(LINKER_SCRIPT ${LD_DEFAULT})
-
-if(USE_BOOT_APP_LD)
-    if(PROJECT STREQUAL "iap_boot")
-        set(LINKER_SCRIPT ${LD_BOOT})
-        add_compile_definitions(BUILD_BL)
-    else()
-        set(LINKER_SCRIPT ${LD_APP})
-        add_compile_definitions(BUILD_APP)
-    endif()
+if(PROJECT_LINKER_SCRIPTS)
+    # Use the first .ld file found in project directory
+    list(GET PROJECT_LINKER_SCRIPTS 0 LINKER_SCRIPT)
+    message(STATUS "Using project-specific linker script: ${LINKER_SCRIPT}")
+else()
+    # Fallback to default linker script
+    set(LINKER_SCRIPT ${LD_DEFAULT})
+    message(STATUS "Using default linker script: ${LINKER_SCRIPT}")
 endif()
-message(STATUS "Using linker script: ${LINKER_SCRIPT}")
+
+# Verify linker script exists
+if(NOT EXISTS ${LINKER_SCRIPT})
+    message(FATAL_ERROR "Linker script not found: ${LINKER_SCRIPT}")
+endif()
 
 # ----- Include directories -----
 target_include_directories(${TARGET_NAME} PRIVATE
