@@ -2,7 +2,6 @@
 #include <stdint.h>
 #include "cli.h"
 #include "cli_cmds.h"
-#include "uart.h"
 
 __attribute__((weak)) void board_led_write(int led_state) { (void)led_state; }
 __attribute__((weak)) sys_time_t board_gettime(void) { return (sys_time_t){0}; }
@@ -33,54 +32,58 @@ static const cli_cmd_t* get_table(void)
 
 static void cmd_help(int argc, char **argv) {
     (void)argc; (void)argv;
-    uart_println("Commands:");
+    const cli_io_t *io = cli_get_io();
+    io->putsln("Commands:");
 
     for (const cli_cmd_t *cmd = get_table(); cmd && cmd->name; ++cmd)
     {
-        uart_print("  ");
-        uart_print(cmd->name);
+        io->puts("  ");
+        io->puts(cmd->name);
         if (cmd->help)
         {
-            uart_print(" - ");
-            uart_println(cmd->help);
+            io->puts(" - ");
+            io->putsln(cmd->help);
         }
         else
         {
-            uart_println("");
+            io->putsln("");
         }
     }
 }
 
 static void cmd_echo(int argc, char **argv) {
+    const cli_io_t *io = cli_get_io();
     for (int i = 1; i < argc; ++i)
     {
-        uart_print(argv[i]);
+        io->puts(argv[i]);
 
         if (i + 1 < argc)
         {
-            uart_putc(' ');
+            io->putc(' ');
         }
     }
 
-    uart_println("");
+    io->putsln("");
 }
 
 static void cmd_led(int argc, char **argv)
 {
+    const cli_io_t *io = cli_get_io();
     if (argc < 2)
     {
-        uart_println("Usage: LED <on|off>");
+        io->putsln("Usage: LED <on|off>");
         return;
     }
 
     int led_state = (argv[1][0] != '0');
     board_led_write(!led_state);
-    uart_println(led_state ? "LED ON" : "LED OFF");
+    io->putsln(led_state ? "LED ON" : "LED OFF");
 }
 
 static void cmd_gettime(int argc, char **argv) {
     (void)argc;
     (void)argv;
+    const cli_io_t *io = cli_get_io();
 
     sys_time_t t = board_gettime();
 
@@ -89,14 +92,15 @@ static void cmd_gettime(int argc, char **argv) {
             t.year, t.month, t.day,
             t.hour, t.min, t.sec);
 
-    uart_print("Clock: ");
-    uart_println(buf);
+    io->puts("Clock: ");
+    io->putsln(buf);
 }
 
 static void cmd_settime(int argc, char **argv) {
+    const cli_io_t *io = cli_get_io();
     if (argc != 3)
     {
-        uart_println("Usage: settime yyyy-mm-dd hh:mm:ss");
+        io->putsln("Usage: settime yyyy-mm-dd hh:mm:ss");
         return;
     }
 
@@ -106,7 +110,7 @@ static void cmd_settime(int argc, char **argv) {
     if (sscanf(argv[1], "%d-%d-%d", &y, &m, &d) != 3 ||
         sscanf(argv[2], "%d:%d:%d", &H, &M, &S) != 3)
     {
-        uart_println("Invalid date/time format!");
+        io->putsln("Invalid date/time format!");
         return;
     }
 
@@ -117,7 +121,7 @@ static void cmd_settime(int argc, char **argv) {
         M < 0 || M > 59 ||
         S < 0 || S > 59)
     {
-        uart_println("Invalid date/time values!");
+        io->putsln("Invalid date/time values!");
         return;
     }
 
@@ -132,18 +136,24 @@ static void cmd_settime(int argc, char **argv) {
 
     char buf[32];
     sprintf(buf, "%04u-%02u-%02u %02u:%02u:%02u", y, m, d, H, M, S);
-    uart_print("Clock set to ");
-    uart_println(buf);
+    io->puts("Clock set to ");
+    io->putsln(buf);
 }
 
 static void cmd_reboot(int argc, char **argv)
 {
     (void)argc;
     (void)argv;
-    uart_println("Reboot...");
+    cli_get_io()->putsln("Reboot...");
     board_reboot();
 }
 
+/**
+ * @brief Registers the default CLI command table.
+ *
+ * @why Provides a standard set of commands (help, echo, led, time, reboot)
+ *      for basic board interaction and testing.
+ */
 void cli_register_default_table(void)
 {
     cli_register(s_cmds);

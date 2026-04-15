@@ -3,6 +3,9 @@
 #include <string.h>
 #include "mem_layout.h"
 
+#define SRAM_START  0x20000000U
+#define SRAM_END    0x20020000U  /* 128 KB SRAM for STM32F411 */
+
 #define APP_VECTOR_TABLE	((struct app_vectable_t *)APP_START_ADDR)
 
 UART_HandleTypeDef huart1;
@@ -58,28 +61,39 @@ void HAL_UART_MspInit(UART_HandleTypeDef* huart)
 }
 
 /**
-  * @brief UART MSP De-Initialization
-  * This function freeze the hardware resources used in this example
-  * @param huart: UART handle pointer
-  * @retval None
-  */
-void HAL_UART_MspDeInit(UART_HandleTypeDef* huart)
+ * @brief Performs a safe jump to the application at APP_START_ADDR.
+ *
+ * Validates the application's vector table (stack pointer and reset handler),
+ * deinitializes peripherals, disables interrupts, remaps flash, and transfers
+ * control to the application with proper stack setup.
+ *
+ * @why Enables bootloader-to-application transitions with safety checks to
+ *      prevent jumping to invalid or corrupted application code.
+ */
+static void JumpToApplication(void)
 {
-    if (huart->Instance == USART1)
-    {
-        /* Peripheral clock disable */
-        __HAL_RCC_USART1_CLK_DISABLE();
+    uint32_t app_sp = APP_VECTOR_TABLE->stack_pointer;
+    void (*app_reset)(void) = APP_VECTOR_TABLE->reset_handler;
+    uint32_t reset_addr = (uint32_t)app_reset;
 
-        /**USART1 GPIO Configuration
-        PA9     ------> USART1_TX
-        PA10     ------> USART1_RX
-        */
-        HAL_GPIO_DeInit(GPIOA, GPIO_PIN_9|GPIO_PIN_10);
+    // Validate stack pointer is within SRAM range
+    if (app_sp < SRAM_START || app_sp > SRAM_END) {
+        HAL_UART_Transmit(&huart1, (uint8_t *)"ERR: No valid app\r\n", 19U, 50U);
+        return;  // No valid application
     }
-}
 
-void JumpToApplication(void)
-{
+    // Validate reset handler is within app flash range and has Thumb bit set
+    if (reset_addr < APP_START_ADDR || reset_addr > (APP_START_ADDR + APP_FLASH_SIZE)
+        || (reset_addr & 1U) == 0U) {
+        HAL_UART_Transmit(&huart1, (uint8_t *)"ERR: No valid app\r\n", 19U, 50U);
+        return;
+    }
+
+    // Deinit peripherals cleanly before jumping
+    HAL_UART_DeInit(&huart1);
+    HAL_DeInit();
+    HAL_RCC_DeInit();
+
     // Disable all interrupts
     __disable_irq();
 
@@ -90,33 +104,37 @@ void JumpToApplication(void)
 
     // Disable interrupts and clear pending ones
     for (size_t i = 0; i < sizeof(NVIC->ICER)/sizeof(NVIC->ICER[0]); i++) {
-        NVIC->ICER[i]=0xFFFFFFFF;
-        NVIC->ICPR[i]=0xFFFFFFFF;
+        NVIC->ICER[i]=0xFFFFFFFFU;
+        NVIC->ICPR[i]=0xFFFFFFFFU;
     }
 
-    // Map Bootloader (system flash) memory to 0x00000000.
-    __HAL_SYSCFG_REMAPMEMORY_SYSTEMFLASH();
+    // Remap main flash to 0x00000000
+    __HAL_SYSCFG_REMAPMEMORY_FLASH();
 
     // Instruction synchronization barrier
     __ISB();
 
-    // Set Main Stack Pointer to the Bootloader defined value.
-    __set_MSP(APP_VECTOR_TABLE->stack_pointer);
+    // Set Main Stack Pointer to the application defined value.
+    __set_MSP(app_sp);
 
     __DSB(); // Data synchronization barrier
     __ISB(); // Instruction synchronization barrier
 
-    // Jump to application's Reset Handler
-    APP_VECTOR_TABLE->reset_handler();
-
-    // The next instructions will not be reached
-    while (1) {}
+    // Branch to application's Reset Handler via asm trampoline (no C stack ops)
+    __asm volatile ("bx %0" : : "r"(app_reset) : "memory");
 }
 
 /**
-  * @brief  The application entry point.
-  * @retval int
-  */
+ * @brief Application entry point for the custom bootloader example.
+ *
+ * Initializes HAL, clocks, GPIO, UART, displays a countdown, then jumps
+ * to the application at APP_START_ADDR with safety validations.
+ *
+ * @why Demonstrates a basic bootloader that validates and jumps to an
+ *      application in a separate flash region with user-visible countdown.
+ *
+ * @return int (never returns).
+ */
 int main(void)
 {
     /* MCU Configuration--------------------------------------------------------*/
@@ -135,20 +153,19 @@ int main(void)
     uint8_t str1[] = "GO!!!\r\n";
     uint8_t tx_buff[64] = {0,};
 
-    HAL_UART_Transmit(&huart1, str, sizeof(str), 50);
+    HAL_UART_Transmit(&huart1, str, sizeof(str) - 1, 50);
 
-    for (uint8_t i = 3; i >= 0; i--)
+    // User-visible countdown before jumping to application
+    for (int i = 3; i > 0; i--)
     {
-        if (i == 0)
-        {
-            HAL_UART_Transmit(&huart1, str1, sizeof(str1), 50);
-            break;
+        int len = snprintf((char *)tx_buff, sizeof(tx_buff), "Jump to App in %ds\r\n", i);
+        if (len > 0) {
+            HAL_UART_Transmit(&huart1, tx_buff, (uint16_t)len, 50U);
         }
-
-        sprintf(tx_buff, "Jump to App in %ds\r\n", i);
-        HAL_UART_Transmit(&huart1, tx_buff, sizeof(tx_buff), 50);
         HAL_Delay(1000);
     }
+
+    HAL_UART_Transmit(&huart1, str1, sizeof(str1) - 1, 50);
 
     JumpToApplication();
 
@@ -245,10 +262,12 @@ static void MX_GPIO_Init(void)
 }
 
 /**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
-void Error_Handler(void)
+ * @brief Error handler that disables interrupts and loops indefinitely.
+ *
+ * @why Provides a safe failure mode for HAL errors without crashing the
+ *      system or attempting recovery.
+ */
+static void Error_Handler(void)
 {
     __disable_irq();
 

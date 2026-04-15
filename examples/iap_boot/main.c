@@ -4,7 +4,8 @@
 #define BOOTLOADER_VECTOR_TABLE	((struct bootloader_vectable_t *)BOOTLOADER_ADDR)
 
 UART_HandleTypeDef huart1;
-uint8_t rx_byte;
+volatile uint8_t rx_byte;
+static volatile uint8_t jump_requested = 0;
 
 static void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
@@ -61,30 +62,15 @@ void HAL_UART_MspInit(UART_HandleTypeDef* huart)
 }
 
 /**
-  * @brief UART MSP De-Initialization
-  * This function freeze the hardware resources used in this example
-  * @param huart: UART handle pointer
-  * @retval None
-  */
-void HAL_UART_MspDeInit(UART_HandleTypeDef* huart)
-{
-    if (huart->Instance == USART1)
-    {
-        /* Peripheral clock disable */
-        __HAL_RCC_USART1_CLK_DISABLE();
-
-        /**USART1 GPIO Configuration
-        PA9     ------> USART1_TX
-        PA10     ------> USART1_RX
-        */
-        HAL_GPIO_DeInit(GPIOA, GPIO_PIN_9|GPIO_PIN_10);
-
-        /* USART1 interrupt DeInit */
-        HAL_NVIC_DisableIRQ(USART1_IRQn);
-    }
-}
-
-void JumpToBootloader(void)
+ * @brief Performs a safe jump to the STM32 system bootloader.
+ *
+ * Deinitializes HAL, disables interrupts, remaps system flash, validates
+ * bootloader vectors, and transfers control to the bootloader reset handler.
+ *
+ * @why Enables in-application programming by transferring execution to the
+ *      built-in DFU bootloader when triggered by UART input.
+ */
+static void JumpToBootloader(void)
 {
     // Deinit HAL and Clocks
     HAL_DeInit();
@@ -105,17 +91,22 @@ void JumpToBootloader(void)
         NVIC->ICPR[i]=0xFFFFFFFF;
     }
 
-    // Re-enable interrupts
-    __enable_irq();
-
     // Map Bootloader (system flash) memory to 0x00000000
     __HAL_SYSCFG_REMAPMEMORY_SYSTEMFLASH();
 
     // Instruction synchronization barrier
     __ISB();
 
+    // Validate stack pointer is within SRAM range (0x20000000 - 0x20020000 for STM32F411)
+    uint32_t sp = BOOTLOADER_VECTOR_TABLE->stack_pointer;
+    if (sp < 0x20000000 || sp > 0x20020000)
+    {
+        // Invalid stack pointer — do not jump
+        NVIC_SystemReset();
+    }
+
     // Set Main Stack Pointer to the Bootloader defined value
-    __set_MSP(BOOTLOADER_VECTOR_TABLE->stack_pointer);
+    __set_MSP(sp);
 
     __DSB(); // Data synchronization barrier
     __ISB(); // Instruction synchronization barrier
@@ -128,9 +119,16 @@ void JumpToBootloader(void)
 }
 
 /**
-  * @brief  The application entry point.
-  * @retval int
-  */
+ * @brief Application entry point for the IAP boot example.
+ *
+ * Initializes HAL, clocks, GPIO, UART, and enters a loop waiting for UART
+ * trigger to jump to bootloader, with LED blinking as activity indicator.
+ *
+ * @why Demonstrates in-application programming by monitoring UART for a
+ *      trigger byte and safely jumping to the system bootloader.
+ *
+ * @return int (never returns).
+ */
 int main(void)
 {
     /* MCU Configuration--------------------------------------------------------*/
@@ -146,12 +144,22 @@ int main(void)
     MX_USART1_UART_Init();
 
     uint8_t str[] = "Jump to Bootloader when receiving 0x11!";
-    HAL_UART_Transmit(&huart1, str, sizeof(str), 50);
-    HAL_UART_Receive_IT(&huart1, &rx_byte, 1);
+    HAL_UART_Transmit(&huart1, str, sizeof(str) - 1, 50);
+    if (HAL_UART_Receive_IT(&huart1, (uint8_t *)&rx_byte, 1) != HAL_OK)
+    {
+        Error_Handler();
+    }
 
     /* Infinite loop */
     while (1)
     {
+        if (jump_requested)
+        {
+            uint8_t str3[] = "Jump to Bootloader ...GO!!!";
+            HAL_UART_Transmit(&huart1, str3, sizeof(str3) - 1, 100);
+            JumpToBootloader();
+        }
+
         HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
         HAL_Delay(500);
     }
@@ -161,13 +169,14 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance == USART1)
     {
-        HAL_UART_Transmit(&huart1, &rx_byte, 1, 50);
-        HAL_UART_Receive_IT(&huart1, &rx_byte, 1);
         if (rx_byte == 0x11)
         {
-            uint8_t str3[] = "Jump to Bootloader ...GO!!!";
-            HAL_UART_Transmit(&huart1, str3, sizeof(str3), 50);
-            JumpToBootloader();
+            jump_requested = 1;
+        }
+
+        if (HAL_UART_Receive_IT(&huart1, (uint8_t *)&rx_byte, 1) != HAL_OK)
+        {
+            Error_Handler();
         }
     }
 }
@@ -261,9 +270,11 @@ static void MX_GPIO_Init(void)
 }
 
 /**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
+ * @brief Error handler that disables interrupts and loops indefinitely.
+ *
+ * @why Provides a safe failure mode for HAL errors without crashing the
+ *      system or attempting recovery.
+ */
 void Error_Handler(void)
 {
     __disable_irq();

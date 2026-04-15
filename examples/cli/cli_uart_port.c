@@ -24,6 +24,12 @@ static const cli_io_t cli_uart_io =
     .putsln = uart_cli_putsln,
 };
 
+/**
+ * @brief Binds the CLI I/O interface to UART functions.
+ *
+ * @why Connects the CLI library to UART output for command responses
+ *      and user interaction in the CLI example.
+ */
 void cli_bind_uart(void)
 {
     cli_set_io(&cli_uart_io);

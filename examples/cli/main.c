@@ -78,9 +78,16 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* huart)
 }
 
 /**
-  * @brief  The application entry point.
-  * @retval int
-  */
+ * @brief Application entry point for the CLI example.
+ *
+ * Initializes HAL, clocks, GPIO, UART, and sets up the CLI with UART binding,
+ * then enters a loop processing UART input for command execution.
+ *
+ * @why Demonstrates a command-line interface over UART for interactive
+ *      control of board functions like LED and time management.
+ *
+ * @return int (never returns).
+ */
 int main(void)
 {
     /* MCU Configuration--------------------------------------------------------*/
@@ -97,6 +104,7 @@ int main(void)
 
     uart_start_rx();
     cli_bind_uart();
+    uart_println("CLI Example -- type 'help'");
     cli_register_default_table();
 
     /* Infinite loop */
@@ -107,6 +115,10 @@ int main(void)
         if (uart_getc(&ch))
         {
             cli_process_byte(ch);
+        }
+        else
+        {
+            __WFI();
         }
     }
 }
@@ -200,10 +212,12 @@ static void MX_GPIO_Init(void)
 }
 
 /**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
-void Error_Handler(void)
+ * @brief Error handler that disables interrupts and loops indefinitely.
+ *
+ * @why Provides a safe failure mode for HAL errors without crashing the
+ *      system or attempting recovery.
+ */
+static void Error_Handler(void)
 {
     __disable_irq();
 

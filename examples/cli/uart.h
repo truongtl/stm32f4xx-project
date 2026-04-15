@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdint.h>
+
 void uart_start_rx(void);
 uint8_t uart_getc(uint8_t *ch);
 void uart_putc(uint8_t ch);

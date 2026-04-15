@@ -13,3 +13,9 @@ typedef struct {
 } sys_time_t;
 
 void cli_register_default_table(void);
+
+/* Board abstraction — implemented in cli_cmd_handle.c */
+void        board_led_write(int led_state);
+sys_time_t  board_gettime(void);
+void        board_settime(sys_time_t t);
+void        board_reboot(void);

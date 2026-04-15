@@ -53,7 +53,7 @@ void HAL_UART_MspInit(UART_HandleTypeDef* huart)
         HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
         /* USART1 interrupt Init */
-        HAL_NVIC_SetPriority(USART1_IRQn, 0, 0);
+        HAL_NVIC_SetPriority(USART1_IRQn, 6, 0);
         HAL_NVIC_EnableIRQ(USART1_IRQn);
     }
 }
@@ -82,7 +82,14 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* huart)
     }
 }
 
-void vLedTask(void *pvParameters)
+/**
+ * @brief FreeRTOS task that toggles the LED at 1 Hz.
+ *
+ * @why Provides a visible heartbeat to confirm the scheduler is running.
+ *
+ * @param pvParameters Unused task parameter.
+ */
+static void vLedTask(void *pvParameters)
 {
     for (;;)
     {
@@ -91,27 +98,42 @@ void vLedTask(void *pvParameters)
     }
 }
 
-void vCliTask(void *pvParameters)
+/**
+ * @brief FreeRTOS task that processes CLI input received over UART.
+ *
+ * Waits for a task notification from the UART ISR, then drains the
+ * receive buffer and passes each byte to the CLI interpreter.
+ *
+ * @why Handles command-line input asynchronously without blocking other tasks.
+ *
+ * @param pvParameters Unused task parameter.
+ */
+static void vCliTask(void *pvParameters)
 {
     for (;;)
     {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
         uint8_t ch = 0;
 
-        if (uart_getc(&ch))
+        while (uart_getc(&ch) != 0U)
         {
             cli_process_byte(ch);
-        }
-        else
-        {
-            vTaskDelay(pdMS_TO_TICKS(1));
         }
     }
 }
 
 /**
-  * @brief  The application entry point.
-  * @retval int
-  */
+ * @brief Application entry point for the FreeRTOS CLI example.
+ *
+ * Initializes HAL, clocks, GPIO, UART, and CLI, creates the LED and CLI
+ * tasks, then starts the FreeRTOS scheduler.
+ *
+ * @why Demonstrates FreeRTOS task scheduling with UART-driven CLI and
+ *      concurrent LED blink on an STM32F411.
+ *
+ * @return int (never returns).
+ */
 int main(void)
 {
     /* MCU Configuration--------------------------------------------------------*/
@@ -130,15 +152,55 @@ int main(void)
     cli_bind_uart();
     cli_register_default_table();
 
-    xTaskCreate(vLedTask, "LED_Task", 128, NULL, 1, NULL);
-    xTaskCreate(vCliTask, "CLI_Task", 128, NULL, 2, NULL);
+    // Create LED blink task with lower priority (1)
+    if (xTaskCreate(vLedTask, "LED_Task", 256, NULL, 1, NULL) != pdPASS)
+    {
+        Error_Handler();
+    }
+
+    // Create CLI processing task with higher priority (2) and get handle
+    TaskHandle_t cli_task_handle = NULL;
+    if (xTaskCreate(vCliTask, "CLI_Task", 512, NULL, 2, &cli_task_handle) != pdPASS)
+    {
+        Error_Handler();
+    }
+    // Register CLI task handle with UART driver for ISR notifications
+    uart_set_rx_task(cli_task_handle);
 
     vTaskStartScheduler();
+    Error_Handler(); /* should never reach here */
 
     /* Infinite loop */
     while (1)
     {
     }
+}
+
+/**
+ * @brief FreeRTOS stack overflow hook that halts the system.
+ *
+ * @why Provides a safe, detectable failure mode for task stack overflows
+ *      during development and debugging.
+ *
+ * @param xTask      Handle of the task that overflowed.
+ * @param pcTaskName Name of the task that overflowed.
+ */
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+    (void) xTask;
+    (void) pcTaskName;
+    taskDISABLE_INTERRUPTS();
+    for (;;);
+}
+
+/**
+ * @brief FreeRTOS idle task hook that enters low-power sleep.
+ *
+ * @why Reduces power consumption when no tasks are ready to run.
+ */
+void vApplicationIdleHook(void)
+{
+    __WFI();
 }
 
 /**
@@ -230,9 +292,11 @@ static void MX_GPIO_Init(void)
 }
 
 /**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
+ * @brief Error handler that disables interrupts and loops indefinitely.
+ *
+ * @why Provides a safe failure mode for HAL errors and scheduler startup
+ *      failure without attempting recovery.
+ */
 void Error_Handler(void)
 {
     __disable_irq();

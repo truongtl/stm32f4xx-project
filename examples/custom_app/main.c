@@ -68,20 +68,29 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* huart)
 }
 
 /**
-  * @brief  The application entry point.
-  * @retval int
-  */
+ * @brief Application entry point for the custom application example.
+ *
+ * Sets the vector table offset to APP_START_ADDR, initializes HAL, re-enables
+ * interrupts (disabled by bootloader), configures peripherals, and blinks LED.
+ *
+ * @why Demonstrates an application that runs from a relocated flash region
+ *      with proper vector table setup after being jumped to by a bootloader.
+ *
+ * @return int (never returns).
+ */
 int main(void)
 {
     /* MCU Configuration--------------------------------------------------------*/
 
+    /* Set vector table offset BEFORE any HAL calls that use interrupts */
+    SCB->VTOR = APP_START_ADDR;
+    __DSB();
+    __ISB();
+
     /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
     HAL_Init();
 
-    /* Set new offset for app's vector table */
-    SCB->VTOR = APP_START_ADDR;
-
-    /* Re-enable interrupts */
+    /* Re-enable interrupts (disabled by bootloader before jump) */
     __enable_irq();
 
     /* Configure the system clock */
@@ -92,7 +101,7 @@ int main(void)
     MX_USART1_UART_Init();
 
     uint8_t str[] = "STM32F411 APPLICATION!\r\n";
-    HAL_UART_Transmit(&huart1, str, sizeof(str), 50);
+    HAL_UART_Transmit(&huart1, str, sizeof(str) - 1, 50);
 
     /* Infinite loop */
     while (1)
@@ -191,10 +200,12 @@ static void MX_GPIO_Init(void)
 }
 
 /**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
-void Error_Handler(void)
+ * @brief Error handler that disables interrupts and loops indefinitely.
+ *
+ * @why Provides a safe failure mode for HAL errors without crashing the
+ *      system or attempting recovery.
+ */
+static void Error_Handler(void)
 {
     __disable_irq();
 

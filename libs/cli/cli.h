@@ -1,5 +1,8 @@
 #pragma once
 
+#include <stdint.h>
+#include "cli_io.h"
+
 #ifndef CLI_MAX_LINE
 #define CLI_MAX_LINE 64
 #endif
@@ -16,3 +19,4 @@ typedef struct
 
 void cli_register(const cli_cmd_t *table);
 void cli_process_byte(uint8_t ch);
+const cli_io_t *cli_get_io(void);
