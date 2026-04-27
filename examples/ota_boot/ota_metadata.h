@@ -19,12 +19,14 @@ typedef struct {
 
     // App A (Factory) info
     uint32_t app_a_size;
-    uint32_t app_a_crc32;
+    uint32_t app_a_crc32;           // CRC32 of App A firmware (active)
+    /* uint8_t app_a_sha256[32]; */ // Future: enable with OTA_VERIFY_SHA256
     uint32_t app_a_version;
 
     // App B (OTA) info
     uint32_t app_b_size;
-    uint32_t app_b_crc32;
+    uint32_t app_b_crc32;           // CRC32 of App B firmware (active)
+    /* uint8_t app_b_sha256[32]; */ // Future: enable with OTA_VERIFY_SHA256
     uint32_t app_b_version;
     uint8_t  app_b_status;
     uint8_t  app_b_first_boot;

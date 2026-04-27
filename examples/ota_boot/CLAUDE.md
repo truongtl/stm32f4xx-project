@@ -23,7 +23,9 @@ Reads OTA metadata from flash, decides which application partition to boot (fact
    - Check reset handler within flash range (`0x08000000`–`0x08080000`)
    - Verify CRC32 of App B flash content against `meta.app_b_crc32`
    - On failure → mark App B invalid, write metadata, fall back to App A
-6. If App A selected: `App_Verify(addr)` — vector table SP + reset handler checks only (no CRC)
+6. If App A selected:
+   - If metadata is valid and `app_a_size > 0`: `App_VerifyCRC(addr, size, app_a_crc32, max_size)`
+   - Otherwise (first boot / no metadata): `App_Verify(addr)` — vector table SP + reset handler checks only
    - On failure → `Boot_Error()` (blinks LED rapidly, never returns)
 7. `JumpToApplication(app_addr)`
 
@@ -43,6 +45,8 @@ Reads OTA metadata from flash, decides which application partition to boot (fact
 | Field | Description |
 |-------|-------------|
 | `magic` | `0xDEADBEEF` — validity marker |
+| `app_a_crc32` | CRC32 of App A firmware (used when `app_a_size > 0`) |
+| `app_a_size` | App A firmware size in bytes |
 | `app_b_status` | `INVALID` (0x00), `PENDING` (0x01), `VALID` (0x02) |
 | `app_b_crc32` | Expected CRC32 of App B firmware |
 | `app_b_size` | App B firmware size in bytes |
@@ -66,3 +70,18 @@ Reads OTA metadata from flash, decides which application partition to boot (fact
 | `mem_layout.h` | Partition addresses |
 | `ota_metadata.h` | Metadata struct and status constants |
 | `STM32F411CEUX_FLASH.ld` | Bootloader linker script (first 32 KB) |
+
+## Security Model
+
+| Mechanism | Status | Notes |
+|-----------|--------|-------|
+| CRC32 firmware verify | **Active** | Detects accidental flash corruption |
+| SHA-256 firmware hash | Disabled | `sha256.c` present; enable with `OTA_VERIFY_SHA256` |
+| HMAC-SHA256 auth | Disabled | `sha256.c` + `ota_auth.h` present; enable with `OTA_VERIFY_HMAC` |
+| AES-128-CBC channel encryption | N/A (factory app) | `aes.c` in `ota_factory_app`; bootloader reads plaintext from flash |
+
+STM32F411 has no hardware hash or AES peripheral. SHA-256 and HMAC are pure
+software (see `sha256.c`). AES-128-CBC decryption belongs to the factory app
+(firmware is decrypted before writing to flash, so the bootloader sees
+plaintext). For production, enable at minimum HMAC-SHA256 to prevent
+unauthorised firmware. Stronger option: replace HMAC with ECDSA.

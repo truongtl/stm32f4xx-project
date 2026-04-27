@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include "mem_layout.h"
 #include "ota_metadata.h"
+/* #include "sha256.h" */ /* Enable with OTA_VERIFY_SHA256 */
 
 /* ---- Types ---- */
 
@@ -225,21 +226,25 @@ static bool App_Verify(uint32_t addr)
 }
 
 /**
- * @brief Performs comprehensive validation of an application including CRC.
+ * @brief Verifies application integrity using a stored CRC32.
  *
- * First validates the vector table, then checks size bounds, and finally
- * verifies the CRC32 of the entire application image.
+ * Validates the vector table, checks size bounds, then computes CRC32
+ * over the entire flash region and compares against the stored value.
  *
- * @why Ensures application integrity before allowing it to run.
+ * Software SHA-256 verification is available but disabled (STM32F411 has no
+ * hardware hash peripheral). Enable by defining OTA_VERIFY_SHA256 and
+ * switching to App_VerifySHA256() in the commented block below.
  *
- * @param addr          Base address of the application.
- * @param size          Size of the application in bytes.
- * @param expected_crc  Expected CRC32 value.
- * @param max_size      Maximum allowed size for this application slot.
- * @return              true if application is valid, false otherwise.
+ * @why Detects accidental corruption of the application image before booting.
+ *
+ * @param addr         Base address of the application.
+ * @param size         Size of the application in bytes.
+ * @param expected_crc Expected CRC32 from metadata.
+ * @param max_size     Maximum allowed size for this application slot.
+ * @return             true if application passes all checks, false otherwise.
  */
-static bool App_VerifyCRC(uint32_t addr, uint32_t size, uint32_t expected_crc,
-                          uint32_t max_size)
+static bool App_VerifyCRC(uint32_t addr, uint32_t size,
+                          uint32_t expected_crc, uint32_t max_size)
 {
     // First verify basic vector table integrity
     if (!App_Verify(addr))
@@ -253,25 +258,53 @@ static bool App_VerifyCRC(uint32_t addr, uint32_t size, uint32_t expected_crc,
         return false;
     }
 
-    // Check for valid CRC value (not 0 or all 1s)
-    if (expected_crc == 0 || expected_crc == 0xFFFFFFFF) {
-        uart_print("  No valid CRC stored\r\n");
-        return false;
-    }
-
-    // Calculate and verify CRC32 of the application image
+    // Compute and compare CRC32 of the application flash region
     uart_print("  Checking CRC32...\r\n");
-    uint32_t crc = CRC32_Calculate((const uint8_t *)addr, size);
-    if (crc != expected_crc) {
-        uart_print("  CRC mismatch: expected ");
-        uart_print_hex(expected_crc);
-        uart_print(", got ");
-        uart_print_hex(crc);
-        uart_print("\r\n");
+    uint32_t computed = CRC32_Calculate((const uint8_t *)addr, size);
+    if (computed != expected_crc) {
+        uart_print("  CRC32 mismatch\r\n");
         return false;
     }
     return true;
 }
+
+/*
+ * Future: replace App_VerifyCRC() above with this when OTA_VERIFY_SHA256
+ * is defined. Requires #include "sha256.h" and software sha256() function.
+ * STM32F411 has no hardware SHA peripheral — computation is software-only.
+ *
+static bool App_VerifySHA256(uint32_t addr, uint32_t size,
+                              const uint8_t expected_sha256[32],
+                              uint32_t max_size)
+{
+    int i;
+    if (!App_Verify(addr))
+        return false;
+    if (size == 0 || size > max_size) {
+        uart_print("  Invalid size: ");
+        uart_print_hex(size);
+        uart_print("\r\n");
+        return false;
+    }
+    bool all_zero = true, all_ones = true;
+    for (i = 0; i < 32; i++) {
+        if (expected_sha256[i] != 0x00) all_zero = false;
+        if (expected_sha256[i] != 0xFF) all_ones = false;
+    }
+    if (all_zero || all_ones) {
+        uart_print("  No SHA-256 stored\r\n");
+        return false;
+    }
+    uart_print("  Checking SHA-256...\r\n");
+    uint8_t computed[32];
+    sha256((const uint8_t *)addr, size, computed);
+    if (memcmp(computed, expected_sha256, 32) != 0) {
+        uart_print("  SHA-256 mismatch\r\n");
+        return false;
+    }
+    return true;
+}
+ */
 
 /* ---- Boot decision ---- */
 
@@ -477,12 +510,12 @@ int main(void)
         app_addr = APP_A_START_ADDR;
         uart_print("Verifying App A...\r\n");
         if (Metadata_IsValid(&meta) && meta.app_a_size > 0) {
-            // Use stored CRC if available
+            // Use stored CRC32 if metadata is populated for App A
             if (!App_VerifyCRC(app_addr, meta.app_a_size, meta.app_a_crc32,
                                APP_A_MAX_SIZE))
                 Boot_Error();
         } else {
-            // Fallback to basic vector table check for first boot
+            // Fallback to basic vector table check on first boot (no metadata yet)
             if (!App_Verify(app_addr))
                 Boot_Error();
         }

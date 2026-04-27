@@ -34,6 +34,9 @@ Usage (CLI):
 """
 
 import argparse
+import hashlib
+# import hmac as _hmac   # Enable with OTA_VERIFY_HMAC
+# from Crypto.Cipher import AES as _AES  # Enable with OTA_DECRYPT_AES (pip install pycryptodome)
 import struct
 import sys
 import time
@@ -65,6 +68,7 @@ ERR_FLASH_WRITE_FAIL = 0x02
 ERR_SEQUENCE_ERROR  = 0x03
 ERR_TIMEOUT         = 0x04
 ERR_FLASH_FULL      = 0x05
+# ERR_AUTH_FAIL    = 0x06  # HMAC authentication failure (enable with OTA_VERIFY_HMAC)
 
 ERR_NAMES = {
     ERR_NONE:             "NONE",
@@ -73,7 +77,42 @@ ERR_NAMES = {
     ERR_SEQUENCE_ERROR:   "SEQUENCE_ERROR",
     ERR_TIMEOUT:          "TIMEOUT",
     ERR_FLASH_FULL:       "FLASH_FULL",
+    # ERR_AUTH_FAIL:      "AUTH_FAIL",  # enable with OTA_VERIFY_HMAC
 }
+
+# ---------------------------------------------------------------------------
+# Shared HMAC-SHA256 key — disabled; enable with OTA_VERIFY_HMAC.
+# Must match OTA_HMAC_KEY in examples/ota_factory_app/ota_auth.h when active.
+# ---------------------------------------------------------------------------
+
+# OTA_HMAC_KEY = bytes([
+#     0x5A, 0x3F, 0x9C, 0x12, 0xE7, 0x4B, 0xD8, 0x01,
+#     0xAB, 0xC6, 0x27, 0x84, 0x3E, 0xF5, 0x9D, 0x70,
+#     0x1C, 0x68, 0xA2, 0xBB, 0x4F, 0x93, 0xD6, 0x0E,
+#     0x72, 0x51, 0xC4, 0x87, 0x3A, 0x9E, 0xF2, 0x16,
+# ])
+
+# ---------------------------------------------------------------------------
+# AES-128-CBC key and IV — disabled; enable with OTA_DECRYPT_AES.
+# Must match OTA_AES_KEY / OTA_AES_IV in examples/ota_factory_app/ota_auth.h.
+# Default key is the FIPS 197 Appendix B test key — change before production.
+# ---------------------------------------------------------------------------
+
+# OTA_AES_KEY = bytes([
+#     0x2B, 0x7E, 0x15, 0x16, 0x28, 0xAE, 0xD2, 0xA6,
+#     0xAB, 0xF7, 0x15, 0x88, 0x09, 0xCF, 0x4F, 0x3C,
+# ])
+# OTA_AES_IV = bytes([
+#     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+#     0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
+# ])
+
+# def _aes_cbc_encrypt(plaintext: bytes, key: bytes, iv: bytes) -> bytes:
+#     """AES-128-CBC encrypt plaintext with PKCS#7 padding (requires pycryptodome)."""
+#     pad_len = 16 - (len(plaintext) % 16)
+#     padded  = plaintext + bytes([pad_len] * pad_len)
+#     cipher  = _AES.new(key, _AES.MODE_CBC, iv)
+#     return cipher.encrypt(padded)
 
 # Maximum App B size in bytes — from mem_layout.h (256 KB)
 APP_B_MAX_SIZE = 256 * 1024
@@ -111,6 +150,16 @@ def crc32(data: bytes) -> int:
     Python's zlib.crc32().
     """
     return zlib.crc32(data) & 0xFFFFFFFF
+
+
+def sha256_digest(data: bytes) -> bytes:
+    """Return the 32-byte SHA-256 digest of data."""
+    return hashlib.sha256(data).digest()
+
+
+# def hmac_sha256_digest(key: bytes, data: bytes) -> bytes:
+#     """Return the 32-byte HMAC-SHA256 of data using key. Enable with OTA_VERIFY_HMAC."""
+#     return _hmac.new(key, data, hashlib.sha256).digest()
 
 
 def build_packet(
@@ -337,16 +386,29 @@ class OTAHost:
     ) -> dict:
         """Send PACKET_TYPE_START and return the parsed ACK/NACK response.
 
-        Encodes the full-firmware CRC32 as a uint32_t in payload[0:4],
-        matching the firmware extraction:
-            memcpy(&expected_fw_crc, pkt.payload, sizeof(uint32_t));
+        Encodes the expected firmware CRC32 in START packet payload bytes 0-3,
+        matching the device extraction::
+
+            memcpy(&expected_fw_crc32, pkt.payload, sizeof(uint32_t));
+
+        Future (OTA_VERIFY_SHA256 / OTA_VERIFY_HMAC): replace with 64-byte
+        SHA-256 + HMAC payload — see commented block in send_start_packet.
         """
         total_size   = len(fw_data)
         total_chunks = (total_size + chunk_size - 1) // chunk_size
-        fw_crc       = crc32(fw_data)
 
-        # Place expected firmware CRC in the first 4 bytes of the payload
-        payload = struct.pack('<I', fw_crc)
+        # Compute firmware CRC32 (active integrity check)
+        fw_crc32 = crc32(fw_data)
+
+        # Pack CRC32 (4 B, little-endian) into START payload bytes 0-3
+        payload = struct.pack('<I', fw_crc32)
+
+        # Future (OTA_VERIFY_SHA256 + OTA_VERIFY_HMAC): replace payload above with:
+        #   fw_sha256 = sha256_digest(fw_data)
+        #   fw_hmac   = hmac_sha256_digest(OTA_HMAC_KEY, fw_data)
+        #   payload   = fw_sha256 + fw_hmac
+        # Future (OTA_DECRYPT_AES): also include the AES IV at payload bytes 64..79:
+        #   payload  += OTA_AES_IV  # static IV from ota_auth.h (or generate per-session)
 
         pkt = build_packet(
             packet_type=PACKET_TYPE_START,
@@ -361,7 +423,8 @@ class OTAHost:
 
         self._log(
             f"START: size={total_size} B, chunks={total_chunks}, "
-            f"version={fw_version:#010x}, crc={fw_crc:#010x}"
+            f"version={fw_version:#010x}, "
+            f"crc32={fw_crc32:#010x}"
         )
         self._send(pkt)
         resp = self._read_response(timeout=timeout)
@@ -444,6 +507,11 @@ class OTAHost:
         # --- DATA ---
         for i in range(total_chunks):
             chunk = fw_data[i * chunk_size:(i + 1) * chunk_size]
+            # Future (OTA_DECRYPT_AES): encrypt chunk before sending.
+            # Pad chunk to a 16-byte boundary, then encrypt:
+            #   chunk = _aes_cbc_encrypt(chunk, OTA_AES_KEY, OTA_AES_IV)
+            # Note: use a stateful AES context (re-init per transfer, not per chunk)
+            # so the CBC chain is continuous across all DATA packets.
             resp  = self.send_data_packet(
                 chunk, i, total_chunks, total_size, fw_version, seq
             )
@@ -516,6 +584,7 @@ def main() -> int:
     print(f"Firmware : {fw_path.name}  ({len(fw_data)} bytes, "
           f"version {args.version})")
     print(f"CRC32    : {crc32(fw_data):#010x}")
+    print(f"SHA-256  : {sha256_digest(fw_data).hex()}  (informational)")
 
     try:
         with OTAHost(args.port, args.baud, verbose=args.verbose) as host:

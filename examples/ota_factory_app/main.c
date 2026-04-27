@@ -4,6 +4,9 @@
 #include "mem_layout.h"
 #include "ota_metadata.h"
 #include "packet.h"
+/* #include "sha256.h"   */ /* Enable with OTA_VERIFY_SHA256              */
+/* #include "aes.h"      */ /* Enable with OTA_DECRYPT_AES                */
+/* #include "ota_auth.h" */ /* Enable with OTA_VERIFY_HMAC / OTA_DECRYPT_AES */
 
 #define OTA_CHUNK_RETRIES  3
 
@@ -329,11 +332,17 @@ static void OTA_SendResponse(uint8_t type, uint8_t seq, uint32_t chunk_idx, uint
  * @brief Main OTA receive function that handles the complete firmware update protocol.
  *
  * Implements a 3-step OTA protocol:
- * 1. Receive START packet with firmware info
- * 2. Receive DATA packets with firmware chunks (with retries)
- * 3. Receive END packet and verify complete firmware CRC
+ * 1. Receive START packet — extracts expected firmware CRC32 from payload bytes 0-3.
+ * 2. Receive DATA packets with firmware chunks (with retries on error).
+ * 3. Receive END packet, verify CRC32 of the written flash region against the
+ *    expected value, then update metadata and reboot.
  *
- * @why Orchestrates the entire OTA firmware update process from host to flash.
+ * Software SHA-256, HMAC-SHA256, and AES-128-CBC implementations are preserved
+ * in sha256.c, aes.c, and ota_auth.h but disabled (STM32F411 has no hardware
+ * hash or AES peripheral). Enable by defining OTA_VERIFY_SHA256 / OTA_VERIFY_HMAC /
+ * OTA_DECRYPT_AES and restoring the commented blocks below.
+ *
+ * @why Orchestrates the full OTA firmware update with CRC32 integrity checking.
  */
 static void OTA_Receive(void)
 {
@@ -364,11 +373,23 @@ static void OTA_Receive(void)
     }
 
     // Extract firmware information from START packet
-    uint32_t total_chunks = pkt.total_chunks;
+    uint32_t total_chunks  = pkt.total_chunks;
     uint32_t total_fw_size = pkt.total_fw_size;
-    uint32_t fw_version = pkt.fw_version;
-    uint32_t expected_fw_crc;
-    memcpy(&expected_fw_crc, pkt.payload, sizeof(uint32_t));
+    uint32_t fw_version    = pkt.fw_version;
+
+    // Extract expected firmware CRC32 from START payload bytes 0-3
+    uint32_t expected_fw_crc32;
+    memcpy(&expected_fw_crc32, pkt.payload, sizeof(uint32_t));
+    /* Future: when OTA_VERIFY_SHA256/OTA_VERIFY_HMAC are defined, extract instead:
+     *   uint8_t expected_fw_sha256[32]; memcpy(expected_fw_sha256, pkt.payload,      32);
+     *   uint8_t expected_fw_hmac[32];   memcpy(expected_fw_hmac,   pkt.payload + 32, 32);
+     */
+    /* Future (OTA_DECRYPT_AES): extract per-session IV from payload bytes 64..79:
+     *   uint8_t aes_iv[AES_BLOCK_SIZE]; memcpy(aes_iv, pkt.payload + 64, AES_BLOCK_SIZE);
+     * OR use the static OTA_AES_IV from ota_auth.h.  Initialise after the size
+     * checks below:
+     *   AES_Ctx aes_ctx; AES_Init(&aes_ctx, OTA_AES_KEY, aes_iv);
+     */
 
     // Validate firmware size
     if (total_fw_size == 0 || total_fw_size > APP_B_MAX_SIZE) {
@@ -449,6 +470,11 @@ static void OTA_Receive(void)
             }
 
             // Write chunk to flash and verify
+            /* Future (OTA_DECRYPT_AES): decrypt chunk before writing to flash:
+             *   static uint8_t dec_buf[sizeof(pkt.payload)];
+             *   AES_CBC_Decrypt(&aes_ctx, pkt.payload, dec_buf, pkt.chunk_size);
+             *   Replace pkt.payload with dec_buf in the Flash_WriteData call below.
+             */
             if (!Flash_WriteData(write_addr, pkt.payload, pkt.chunk_size)) {
                 OTA_SendResponse(PACKET_TYPE_NACK, pkt.seq_number, i, ERR_FLASH_WRITE_FAIL);
                 uart_print("Write/verify failed\r\n");
@@ -516,15 +542,11 @@ static void OTA_Receive(void)
         return;
     }
 
-    /* Verify complete firmware CRC against expected value */
-    uart_print("Verifying firmware CRC...\r\n");
-    uint32_t fw_crc = CRC32_Calculate((const uint8_t *)APP_B_START_ADDR, total_fw_size);
-    if (fw_crc != expected_fw_crc) {
-        uart_print("FW CRC mismatch: expected ");
-        uart_print_hex(expected_fw_crc);
-        uart_print(", got ");
-        uart_print_hex(fw_crc);
-        uart_print("\r\n");
+    /* Verify CRC32 integrity of the written firmware image */
+    uart_print("Verifying CRC32...\r\n");
+    uint32_t computed_fw_crc = CRC32_Calculate((const uint8_t *)APP_B_START_ADDR, total_fw_size);
+    if (computed_fw_crc != expected_fw_crc32) {
+        uart_print("Firmware CRC mismatch\r\n");
         OTA_SendResponse(PACKET_TYPE_NACK, pkt.seq_number, 0, ERR_CRC_FAIL);
         meta.ota_in_progress = 0;
         meta.app_b_status = APP_STATUS_INVALID;
@@ -532,9 +554,32 @@ static void OTA_Receive(void)
         return;
     }
 
+    /* Future: replace the CRC32 check above with SHA-256 + HMAC when enabled.
+     *
+     * #ifdef OTA_VERIFY_SHA256
+     *   uint8_t computed_sha256[32];
+     *   sha256((const uint8_t *)APP_B_START_ADDR, total_fw_size, computed_sha256);
+     *   if (memcmp(computed_sha256, expected_fw_sha256, 32) != 0) {
+     *       uart_print("SHA-256 mismatch\r\n");
+     *       OTA_SendResponse(PACKET_TYPE_NACK, pkt.seq_number, 0, ERR_CRC_FAIL);
+     *       ... return;
+     *   }
+     * #endif
+     * #ifdef OTA_VERIFY_HMAC
+     *   uint8_t computed_hmac[32];
+     *   hmac_sha256(OTA_HMAC_KEY, sizeof(OTA_HMAC_KEY),
+     *               (const uint8_t *)APP_B_START_ADDR, total_fw_size, computed_hmac);
+     *   if (memcmp(computed_hmac, expected_fw_hmac, 32) != 0) {
+     *       uart_print("HMAC auth failed\r\n");
+     *       OTA_SendResponse(PACKET_TYPE_NACK, pkt.seq_number, 0, ERR_AUTH_FAIL);
+     *       ... return;
+     *   }
+     * #endif
+     */
+
     /* Update metadata to mark App B as ready for boot testing */
     meta.app_b_size = total_fw_size;
-    meta.app_b_crc32 = fw_crc;
+    meta.app_b_crc32 = computed_fw_crc;
     meta.app_b_version = fw_version;
     meta.app_b_status = APP_STATUS_PENDING;
     meta.app_b_first_boot = 0;

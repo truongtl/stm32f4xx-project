@@ -5,6 +5,122 @@ Covers `examples/ota_boot` (bootloader at `0x08000000`) and
 
 ---
 
+## System Architecture — ESP32 WiFi Bridge
+
+In a production or lab setup an **ESP32 Dev Kit v1** acts as a wireless OTA bridge
+between a remote firmware server and the STM32F411CEU6 target.  The ESP32 handles
+WiFi connectivity, firmware download, and packet framing; the STM32 only ever sees
+the binary OTA protocol defined in `examples/ota_factory_app/packet.h`.
+
+### Block Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          INTERNET / LAN                                 │
+│                                                                         │
+│   ┌───────────────────┐              ┌──────────────────────────┐      │
+│   │  Firmware Server  │              │  Web / CI Dashboard      │      │
+│   │  GET /fw/v2.bin   │              │  (trigger OTA remotely)  │      │
+│   └────────┬──────────┘              └───────────┬──────────────┘      │
+└────────────┼─────────────────────────────────────┼─────────────────────┘
+             │ HTTPS                                │ HTTPS / MQTT
+             ▼                                      ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                         ESP32 Dev Kit v1                               │
+│                                                                        │
+│  1. Connect to WiFi AP                                                 │
+│  2. Poll firmware server — compare remote version with current         │
+│  3. If newer version found → HTTP GET firmware .bin into buffer        │
+│  4. Send 0x7F trigger byte via UART2 → STM32 enters OTA_Receive()     │
+│  5. Execute OTA protocol: START → DATA × N → END                      │
+│  6. Handle ACK / NACK per chunk; retry up to OTA_CHUNK_RETRIES times  │
+│  7. On END ACK: STM32 resets automatically; log success                │
+│                                                                        │
+│   GPIO17 (TX2) ─────────────────────────────► PA10 (USART1 RX)       │
+│   GPIO16 (RX2) ◄───────────────────────────── PA9  (USART1 TX)       │
+│   GND          ─────────────────────────────── GND                    │
+│   GPIO4        ──── [optional] ─────────────► NRST  (hard reset)     │
+└────────────────────────────────────────────────────────────────────────┘
+                 UART2   115200 baud   8N1   3.3 V logic
+                         (no level shifter needed)
+             ▼                                      ▲
+┌────────────────────────────────────────────────────────────────────────┐
+│                     STM32F411CEU6  (WeAct BlackPill)                   │
+│                                                                        │
+│  0x08000000 │ ota_boot      32 KB  sectors 0–1  (bootloader)          │
+│  0x08008000 │ Metadata      16 KB  sector  2                          │
+│  0x0800C000 │ App A        208 KB  sectors 3–5  ◄─ factory app RUNS   │
+│  0x08040000 │ App B        256 KB  sectors 6–7  ◄─ OTA target         │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### ESP32 ↔ STM32 Pin Connections
+
+| ESP32 Pin | STM32 Pin | Direction | Description |
+|-----------|-----------|-----------|-------------|
+| GPIO17 (TX2) | PA10 (RX1) | ESP32 → STM32 | UART data to target |
+| GPIO16 (RX2) | PA9 (TX1) | STM32 → ESP32 | UART data from target |
+| GND | GND | — | **Mandatory** common ground |
+| GPIO4 *(optional)* | NRST | ESP32 → STM32 | Hardware reset line |
+| 3.3 V *(optional)* | 3.3 V | — | Shared supply if powered together |
+
+Both devices operate at 3.3 V logic — direct connection, no level shifter required.
+
+### OTA Transfer Sequence
+
+```
+ESP32                              STM32 App A              ota_boot
+  │                                     │                       │
+  │── WiFi: HTTP GET firmware.bin ────► │                       │
+  │◄─ 200 OK + binary ──────────────── │                       │
+  │                                     │                       │
+  │── UART: 0x7F (trigger) ───────────► │                       │
+  │                            OTA_Receive() starts             │
+  │── START packet ───────────────────► │ erase sectors 6–7     │
+  │◄─ ACK ──────────────────────────── │                       │
+  │                                     │                       │
+  │── DATA chunk 0/N ─────────────────► │ write 0x08040000      │
+  │◄─ ACK ──────────────────────────── │                       │
+  │── DATA chunk 1/N ─────────────────► │ write next 1 KB       │
+  │◄─ ACK ──────────────────────────── │                       │
+  │         ... N chunks total ...      │                       │
+  │── END packet ─────────────────────► │ verify full CRC32     │
+  │◄─ ACK ──────────────────────────── │ write metadata        │
+  │                             NVIC_SystemReset()              │
+  │                                          │                  │
+  │                                    [RESET]                  │
+  │                                               ota_boot runs │
+  │                                               app_b_status  │
+  │                                               = PENDING     │
+  │                                               verify CRC    │
+  │                                               jump 0x08040000
+```
+
+### ESP32 Firmware Responsibilities
+
+The ESP32 firmware reimplements the logic in `tests/ota_host.py` in C (Arduino or
+ESP-IDF).  Minimum required tasks:
+
+| Task | Responsibility |
+|------|---------------|
+| WiFi Manager | Connect to AP; handle reconnection |
+| Version Checker | Periodic HTTP GET `/api/version`; compare with stored version |
+| OTA Downloader | HTTP GET firmware `.bin`; buffer in chunks of 1024 bytes (PSRAM or SPIFFS) |
+| UART OTA Sender | Send trigger → START → DATA × N → END; handle ACK/NACK and retries |
+| Debug Logger | Forward STM32 UART output to ESP32 `Serial0` for monitoring |
+
+### Firmware Server Options
+
+| Option | Best For |
+|--------|---------|
+| `python -m http.server 8080` on PC | Local development and testing |
+| Raspberry Pi on LAN | Offline lab deployment |
+| GitHub Releases (HTTPS) | Simple production |
+| AWS S3 / Firebase Storage | Production with multiple devices |
+| MQTT broker + binary payload | Environments already running MQTT |
+
+---
+
 ## Hardware & Software Requirements
 
 | Item | Purpose |
@@ -14,10 +130,29 @@ Covers `examples/ota_boot` (bootloader at `0x08000000`) and
 | ST-Link v2 / v3 | Flash programming and hardware reset |
 | `arm-none-eabi-gcc` toolchain | Building firmware images |
 | Python ≥ 3.10 + `pyserial` | OTA host tool and test scripts |
-| `stlink-tools` (`st-flash`) | Direct flash writes and board reset in probe tests |
+| STM32CubeProgrammer (`STM32_Programmer_CLI.exe`) | Direct flash writes and board reset in probe tests |
+
+### Windows-Specific Setup
+
+**Toolchain and build system** — install in this order:
+1. [MSYS2](https://www.msys2.org/) — provides `make`, `ninja`, and a Unix shell.  
+   After installing, open the **MSYS2 MinGW 64-bit** terminal and run:
+   ```bash
+   pacman -S mingw-w64-x86_64-arm-none-eabi-gcc mingw-w64-x86_64-cmake ninja make
+   ```
+2. All `make` and `cmake` commands in this document must be run from the **MSYS2 MinGW 64-bit** shell.
+
+**Flash tool** — install [STM32CubeProgrammer](https://www.st.com/en/development-tools/stm32cubeprog.html).  
+Add its `bin/` folder to your Windows `PATH` so `STM32_Programmer_CLI.exe` is available from the MSYS2 shell.
+
+**Serial port** — USB-to-UART adapters appear as `COMx` in Windows (e.g. `COM3`).  
+Check **Device Manager → Ports (COM & LPT)** to find the assigned port number.  
+Use that port name wherever `/dev/ttyUSB0` appears in the commands below.
+
+**Python** — install from [python.org](https://www.python.org/downloads/) and ensure it is on `PATH`.
 
 Install Python dependencies:
-```bash
+```bat
 pip install pyserial
 ```
 
@@ -36,7 +171,7 @@ pip install pyserial
 
 ## Initial Flash Setup
 
-Perform once before running any tests:
+Perform once before running any tests.  Run all commands from the **MSYS2 MinGW 64-bit** shell.
 
 ```bash
 # 1. Build both examples
@@ -44,11 +179,17 @@ make ota_boot
 make ota_factory_app
 
 # 2. Flash the bootloader
-st-flash write build/ota_boot/out/ota_boot.bin 0x08000000
+STM32_Programmer_CLI.exe -c port=SWD -w build/ota_boot/out/ota_boot.bin 0x08000000 -rst
 
 # 3. Flash the factory app
-st-flash write build/ota_factory_app/out/ota_factory_app.bin 0x0800C000
+STM32_Programmer_CLI.exe -c port=SWD -w build/ota_factory_app/out/ota_factory_app.bin 0x0800C000 -rst
 ```
+
+> **Note**: If you prefer the open-source `st-flash` tool (from [stlink-tools](https://github.com/stlink-org/stlink/releases) Windows builds), the equivalent commands are:
+> ```bash
+> st-flash write build/ota_boot/out/ota_boot.bin 0x08000000
+> st-flash write build/ota_factory_app/out/ota_factory_app.bin 0x0800C000
+> ```
 
 After flashing, connect a terminal (115200 8N1) to USART1 (PA9/PA10) and confirm:
 ```
@@ -71,19 +212,18 @@ Verifying App A...
 
 ### Running a test suite
 
-```bash
-# Run all tests on /dev/ttyUSB0
-python tests/test_ota_protocol.py --port /dev/ttyUSB0
+Replace `COM3` with the actual port shown in Device Manager.
 
-# Run with st-flash (probe) tests enabled
-python tests/test_bootloader.py  --port /dev/ttyUSB0
-python tests/test_recovery.py    --port /dev/ttyUSB0
+```bat
+# Run all tests
+python tests/test_ota_protocol.py --port COM3
+
+# Run with STM32CubeProgrammer (probe) tests enabled
+python tests/test_bootloader.py  --port COM3
+python tests/test_recovery.py    --port COM3
 
 # Send a real firmware update manually
-python tests/ota_host.py \
-    --port /dev/ttyUSB0 \
-    --firmware build/ota_factory_app/out/ota_factory_app.bin \
-    --version 2
+python tests/ota_host.py --port COM3 --firmware build/ota_factory_app/out/ota_factory_app.bin --version 2
 ```
 
 ---

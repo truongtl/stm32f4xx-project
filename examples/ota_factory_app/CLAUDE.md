@@ -79,4 +79,22 @@ Same as `ota_boot`:
 | `mem_layout.h` | Partition addresses (shared with ota_boot) |
 | `ota_metadata.h` | Metadata struct and status constants (shared with ota_boot) |
 | `packet.h` | OTA packet and response structures |
+| `sha256.c` / `sha256.h` | Software SHA-256 + HMAC-SHA256 (present, disabled) |
+| `aes.c` / `aes.h` | Software AES-128-CBC encrypt/decrypt (present, disabled) |
+| `ota_auth.h` | HMAC key + AES key/IV definitions (present, disabled) |
 | `STM32F411CEUX_FLASH.ld` | Linker script placing app at `0x0800C000` |
+
+## Security Model
+
+| Mechanism | Status | Notes |
+|-----------|--------|-------|
+| CRC32 packet integrity | **Active** | Every packet and response carries a CRC32 |
+| CRC32 firmware verify | **Active** | END-phase check over written App B flash region |
+| SHA-256 firmware hash | Disabled | `sha256.c` present; enable with `OTA_VERIFY_SHA256` |
+| HMAC-SHA256 auth | Disabled | `ota_auth.h` present; enable with `OTA_VERIFY_HMAC` |
+| AES-128-CBC channel encryption | Disabled | `aes.c` present; enable with `OTA_DECRYPT_AES` |
+
+STM32F411 has no hardware hash or AES peripheral. SHA-256, HMAC, and AES are
+pure software implementations. For production, enable at minimum HMAC-SHA256 to
+prevent unauthorised firmware injection, and AES-128-CBC to protect firmware
+confidentiality in transit. For stronger authentication, replace HMAC with ECDSA.

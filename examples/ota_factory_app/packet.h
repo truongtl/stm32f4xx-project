@@ -6,6 +6,19 @@
 #define OTA_RESPONSE_MAGIC  0x55AA
 #define OTA_TRIGGER_BYTE    0x7F
 
+// START packet payload layout (payload[1024]) — active:
+//   [  0..  3] fw_crc32[4]  — CRC32 of the complete firmware binary
+//   [  4..1023]             — reserved, must be 0xFF
+//
+// Future upgrade (software-only; STM32F411 has no hardware SHA/AES peripheral):
+//   [  0.. 31] fw_sha256[32] — SHA-256 hash of firmware (define OTA_VERIFY_SHA256)
+//   [ 32.. 63] fw_hmac[32]   — HMAC-SHA256(OTA_HMAC_KEY, firmware) (define OTA_VERIFY_HMAC)
+//   [ 64.. 79] aes_iv[16]    — per-transfer AES-128-CBC IV (define OTA_DECRYPT_AES;
+//                              omit if using static OTA_AES_IV from ota_auth.h)
+//   [ 80..1023]              — reserved
+//
+// DATA packet payload: raw firmware chunk bytes (chunk_size valid bytes).
+// END packet payload:  unused.
 typedef struct {
     uint16_t magic;           // 0xAA55 - start marker
     uint8_t  packet_type;     // PACKET_TYPE_xxx
@@ -43,3 +56,4 @@ typedef struct {
 #define ERR_SEQUENCE_ERROR      0x03
 #define ERR_TIMEOUT             0x04
 #define ERR_FLASH_FULL          0x05
+/* #define ERR_AUTH_FAIL        0x06 */ // HMAC authentication failure (enable with OTA_VERIFY_HMAC)
